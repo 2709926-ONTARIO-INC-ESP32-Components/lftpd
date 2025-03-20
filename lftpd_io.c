@@ -41,8 +41,12 @@ char* lftpd_io_canonicalize_path(const char* base, const char* name) {
 
 	// allocate enough room for the absolute path, which can never be
 	// longer than the path, plus 1 for a / and 1 for the terminator
-	size_t abs_path_len = strlen(path) + 1 + 1;
+	size_t abs_path_len = strlen(path) + 2;
 	char* abs_path = malloc(abs_path_len);
+	if (abs_path == NULL) {
+        free(path);
+        return NULL;
+    }
 	memset(abs_path, 0, abs_path_len);
 
 	// run through the path a segment at a time, adding each to
@@ -50,10 +54,10 @@ char* lftpd_io_canonicalize_path(const char* base, const char* name) {
 	char* save_pointer = NULL;
 	char* token = strtok_r(path, "/", &save_pointer);
 	while (token) {
-		if (strcmp(token, ".") == 0) {
+		if (strncmp(token, ".", 2) == 0) {
 			// ignore it
 		}
-		else if (strcmp(token, "..") == 0) {
+		else if (strncmp(token, "..", 3) == 0) {
 			// go back one element
 			char* p = strrchr(abs_path, '/');
 			if (p != NULL) {
@@ -61,8 +65,8 @@ char* lftpd_io_canonicalize_path(const char* base, const char* name) {
 			}
 		}
 		else {
-			strcat(abs_path, "/");
-			strcat(abs_path, token);
+			strncat(abs_path, "/", abs_path_len - strlen(abs_path) - 1);
+			strncat(abs_path, token, abs_path_len - strlen(abs_path) - 1);
 		}
 
 		token = strtok_r(NULL, "/", &save_pointer);
@@ -72,9 +76,9 @@ char* lftpd_io_canonicalize_path(const char* base, const char* name) {
 	// a path like /test/.. might have removed everything and left
 	// an empty path, so detect that condition and fix it
 	if (strlen(abs_path) == 0) {
-		strcpy(abs_path, "/");
+		strncpy(abs_path, "/", abs_path_len - 1);
+        abs_path[abs_path_len - 1] = '\0';
 	}
-
+	
 	return abs_path;
 }
-

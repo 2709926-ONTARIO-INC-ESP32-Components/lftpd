@@ -1,9 +1,12 @@
 #pragma once
+#include <stdbool.h>
 
 typedef struct {
 	char* directory;
 	int socket;
 	int data_socket;
+	bool authenticated;
+	char username[64];
 } lftpd_client_t;
 
 typedef struct {

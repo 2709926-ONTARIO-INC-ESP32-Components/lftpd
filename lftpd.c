@@ -22,6 +22,9 @@
 #include "private/lftpd_string.h"
 #include "private/lftpd_io.h"
 
+#define VALID_USERNAME "admin"
+#define VALID_PASSWORD "secret"
+
 // https://tools.ietf.org/html/rfc959
 // https://tools.ietf.org/html/rfc2389#section-2.2
 // https://tools.ietf.org/html/rfc3659
@@ -252,6 +255,12 @@ static int receive_file(int socket, const char *path)
 
 static int cmd_cwd(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	if (arg == NULL || strlen(arg) == 0)
 	{
 		send_simple_response(client->socket, 550, STATUS_550);
@@ -285,6 +294,12 @@ static int cmd_cwd(lftpd_client_t *client, const char *arg)
 
 static int cmd_dele(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	if (arg == NULL || strlen(arg) == 0)
 	{
 		send_simple_response(client->socket, 550, STATUS_550);
@@ -318,6 +333,12 @@ static int cmd_dele(lftpd_client_t *client, const char *arg)
 
 static int cmd_epsv(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	// open a data port
 	int listener_socket = lftpd_inet_listen(0);
 	if (listener_socket < 0)
@@ -364,6 +385,12 @@ static int cmd_feat(lftpd_client_t *client, const char *arg)
 
 static int cmd_list(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	if (client->data_socket == -1)
 	{
 		send_simple_response(client->socket, 425, STATUS_425);
@@ -387,6 +414,12 @@ static int cmd_list(lftpd_client_t *client, const char *arg)
 
 static int cmd_nlst(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	if (client->data_socket == -1)
 	{
 		send_simple_response(client->socket, 425, STATUS_425);
@@ -414,14 +447,29 @@ static int cmd_noop(lftpd_client_t *client, const char *arg)
 	return 0;
 }
 
-static int cmd_pass(lftpd_client_t *client, const char *arg)
-{
-	send_simple_response(client->socket, 230, STATUS_230);
+static int cmd_pass(lftpd_client_t* client, const char* arg) {
+	if (client->username[0] == '\0') {
+		// No username provided yet
+		send_simple_response(client->socket, 503, "Bad sequence of commands.");
+		return 0;
+	}
+	if (arg != NULL && strcmp(arg, VALID_PASSWORD) == 0) {
+		client->authenticated = true;
+		send_simple_response(client->socket, 230, "User logged in successfully.");
+	} else {
+		send_simple_response(client->socket, 530, "Authentication failed.");
+	}
 	return 0;
 }
 
 static int cmd_pasv(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	// open a data port
 	int listener_socket = lftpd_inet_listen(0);
 	if (listener_socket < 0)
@@ -476,6 +524,12 @@ static int cmd_pasv(lftpd_client_t *client, const char *arg)
 
 static int cmd_pwd(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	send_simple_response(client->socket, 257, "\"%s\"", client->directory);
 	return 0;
 }
@@ -488,6 +542,12 @@ static int cmd_quit(lftpd_client_t *client, const char *arg)
 
 static int cmd_retr(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	if (client->data_socket == -1)
 	{
 		send_simple_response(client->socket, 425, STATUS_425);
@@ -514,6 +574,12 @@ static int cmd_retr(lftpd_client_t *client, const char *arg)
 
 static int cmd_size(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	if (!arg)
 	{
 		send_simple_response(client->socket, 550, STATUS_550);
@@ -537,6 +603,12 @@ static int cmd_size(lftpd_client_t *client, const char *arg)
 
 static int cmd_stor(lftpd_client_t *client, const char *arg)
 {
+	if (!client->authenticated)
+	{
+		send_simple_response(client->socket, 530, "Not logged in.");
+		return 0;
+	}
+
 	if (client->data_socket == -1)
 	{
 		send_simple_response(client->socket, 425, STATUS_425);
@@ -575,17 +647,31 @@ static int cmd_type(lftpd_client_t *client, const char *arg)
 
 static int cmd_user(lftpd_client_t *client, const char *arg)
 {
-	send_simple_response(client->socket, 230, STATUS_230);
-	return 0;
+    if (arg == NULL || strlen(arg) == 0)
+    {
+        send_simple_response(client->socket, 530, "Invalid username.");
+        return 0;
+    }
+    if (strcmp(arg, VALID_USERNAME) == 0)
+    {
+        strncpy(client->username, arg, sizeof(client->username));
+        client->authenticated = false;
+        send_simple_response(client->socket, 331, "Username verified, please enter password.");
+    }
+    else
+    {
+        send_simple_response(client->socket, 530, "User not recognized.");
+    }
+    return 0;
 }
 
 static int handle_control_channel(lftpd_client_t *client)
 {
 	int err = send_simple_response(client->socket, 220, STATUS_220);
-	
-	char* read_buffer = NULL;
+
+	char *read_buffer = NULL;
 	size_t read_buffer_len = 512;
-	
+
 	if (err != 0)
 	{
 		lftpd_log_error("error sending welcome message");
@@ -735,6 +821,8 @@ int lftpd_start(const char *directory, int port, lftpd_t *lftpd)
 			.directory = strdup(directory),
 			.socket = client_socket,
 			.data_socket = -1,
+			.authenticated = false,
+			.username = {0},
 		};
 		lftpd->client = &client;
 		handle_control_channel(&client);

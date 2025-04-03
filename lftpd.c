@@ -22,6 +22,11 @@
 #include "private/lftpd_string.h"
 #include "private/lftpd_io.h"
 
+#include "nvs_manager.h"
+
+static char valid_username[32] = {0};
+static char valid_password[32] = {0};
+
 // https://tools.ietf.org/html/rfc959
 // https://tools.ietf.org/html/rfc2389#section-2.2
 // https://tools.ietf.org/html/rfc3659
@@ -73,6 +78,34 @@ static command_t commands[] = {
 	{"USER", cmd_user},
 	{NULL, NULL},
 };
+
+static int load_credentials_from_nvs(void)
+{
+    // Load username from NVS
+    char *username = nvs_manager_get_str("sys", "username");
+    if (username != NULL) {
+        strncpy(valid_username, username, sizeof(valid_username) - 1);
+        valid_username[sizeof(valid_username) - 1] = '\0'; // Ensure null termination
+        free(username); // Free the memory allocated by nvs_manager_get_str
+    } else {
+        // Fallback to default if needed
+        strcpy(valid_username, "admin");
+    }
+    
+    // Load password from NVS
+    char *password = nvs_manager_get_str("sys", "password");
+    if (password != NULL) {
+        strncpy(valid_password, password, sizeof(valid_password) - 1);
+        valid_password[sizeof(valid_password) - 1] = '\0'; // Ensure null termination
+        free(password); // Free the memory allocated by nvs_manager_get_str
+    } else {
+        // Fallback to default if needed
+        strcpy(valid_password, "secret");
+    }
+    
+    return 0;
+}
+
 
 static int send_response(int socket, int code, bool include_code,
 						 bool multiline_start, const char *format, ...)
@@ -252,104 +285,170 @@ static int receive_file(int socket, const char *path)
 
 static int cmd_cwd(lftpd_client_t *client, const char *arg)
 {
-	if (arg == NULL || strlen(arg) == 0)
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-	}
-
-	char *path = lftpd_io_canonicalize_path(client->directory, arg);
-
-	// make sure the path exists
-	struct stat st;
-	if (stat(path, &st) != 0)
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-		free(path);
-		return -1;
-	}
-
-	// make sure the path is a directory
-	if (!S_ISDIR(st.st_mode))
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-		free(path);
-		return -1;
-	}
-
-	free(client->directory);
-	client->directory = path;
-	send_simple_response(client->socket, 250, STATUS_250);
-
-	return 0;
+    int result = 0;
+    char *path = NULL;
+    struct stat st;
+    
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else if (arg == NULL || strlen(arg) == 0)
+    {
+        send_simple_response(client->socket, 550, STATUS_550);
+        result = -1;
+    }
+    else
+    {
+        path = lftpd_io_canonicalize_path(client->directory, arg);
+        
+        // make sure the path exists
+        if (stat(path, &st) != 0)
+        {
+            send_simple_response(client->socket, 550, STATUS_550);
+            result = -1;
+        }
+        // make sure the path is a directory
+        else if (!S_ISDIR(st.st_mode))
+        {
+            send_simple_response(client->socket, 550, STATUS_550);
+            result = -1;
+        }
+        else
+        {
+            free(client->directory);
+            client->directory = path;
+            send_simple_response(client->socket, 250, STATUS_250);
+            path = NULL; // Prevent freeing the path that's now assigned to client->directory
+        }
+    }
+    
+    // Clean up allocated memory if needed
+    if (path != NULL)
+    {
+        free(path);
+    }
+    
+    return result;
 }
+
 
 static int cmd_dele(lftpd_client_t *client, const char *arg)
 {
-	if (arg == NULL || strlen(arg) == 0)
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-	}
-
-	char *path = lftpd_io_canonicalize_path(client->directory, arg);
-
-	// make sure the path exists
-	struct stat st;
-	if (stat(path, &st) != 0)
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-		free(path);
-		return -1;
-	}
-
-	// make sure the path is a file
-	if (!S_ISREG(st.st_mode))
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-		free(path);
-		return -1;
-	}
-
-	remove(path);
-	free(path);
-	send_simple_response(client->socket, 250, STATUS_250);
-
-	return 0;
+    int result = 0;
+    char *path = NULL;
+    struct stat st;
+    
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else if (arg == NULL || strlen(arg) == 0)
+    {
+        send_simple_response(client->socket, 550, STATUS_550);
+        result = -1;
+    }
+    else
+    {
+        path = lftpd_io_canonicalize_path(client->directory, arg);
+        
+        // make sure the path exists
+        if (stat(path, &st) != 0)
+        {
+            send_simple_response(client->socket, 550, STATUS_550);
+            result = -1;
+        }
+        // make sure the path is a file
+        else if (!S_ISREG(st.st_mode))
+        {
+            send_simple_response(client->socket, 550, STATUS_550);
+            result = -1;
+        }
+        else
+        {
+            if (remove(path) != 0)
+            {
+                // Handle deletion failure
+                send_simple_response(client->socket, 550, "Failed to delete file.");
+                result = -1;
+            }
+            else
+            {
+                send_simple_response(client->socket, 250, STATUS_250);
+            }
+        }
+    }
+    
+    // Clean up allocated memory
+    if (path != NULL)
+    {
+        free(path);
+    }
+    
+    return result;
 }
+
 
 static int cmd_epsv(lftpd_client_t *client, const char *arg)
 {
-	// open a data port
-	int listener_socket = lftpd_inet_listen(0);
-	if (listener_socket < 0)
-	{
-		send_simple_response(client->socket, 425, STATUS_425);
-		return -1;
-	}
-
-	// get the port from the new socket, which is random
-	int port = lftpd_inet_get_socket_port(listener_socket);
-
-	// format the response
-	send_simple_response(client->socket, 229, STATUS_229, port);
-
-	// wait for the connection to the data port
-	lftpd_log_debug("waiting for data port connection on port %d...", port);
-	int client_socket = accept(listener_socket, NULL, NULL);
-	if (client_socket < 0)
-	{
-		lftpd_log_error("error accepting client socket");
-		close(listener_socket);
-		return -1;
-	}
-	lftpd_log_debug("data port connection received...");
-
-	// close the listener
-	close(listener_socket);
-
-	client->data_socket = client_socket;
-
-	return 0;
+    int result = 0;
+    int listener_socket = -1;
+    int client_socket = -1;
+    int port = 0;
+    
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else
+    {
+        // open a data port
+        listener_socket = lftpd_inet_listen(0);
+        if (listener_socket < 0)
+        {
+            send_simple_response(client->socket, 425, STATUS_425);
+            result = -1;
+        }
+        else
+        {
+            // get the port from the new socket, which is random
+            port = lftpd_inet_get_socket_port(listener_socket);
+            
+            // format the response
+            send_simple_response(client->socket, 229, STATUS_229, port);
+            
+            // wait for the connection to the data port
+            lftpd_log_debug("waiting for data port connection on port %d...", port);
+            client_socket = accept(listener_socket, NULL, NULL);
+            
+            if (client_socket < 0)
+            {
+                lftpd_log_error("error accepting client socket");
+                result = -1;
+            }
+            else
+            {
+                lftpd_log_debug("data port connection received...");
+                client->data_socket = client_socket;
+                client_socket = -1; // Prevent closing the socket that's now assigned to client
+            }
+        }
+    }
+    
+    // Clean up resources
+    if (listener_socket >= 0)
+    {
+        close(listener_socket);
+    }
+    
+    if (client_socket >= 0)
+    {
+        close(client_socket);
+    }
+    
+    return result;
 }
+
 
 static int cmd_feat(lftpd_client_t *client, const char *arg)
 {
@@ -364,49 +463,79 @@ static int cmd_feat(lftpd_client_t *client, const char *arg)
 
 static int cmd_list(lftpd_client_t *client, const char *arg)
 {
-	if (client->data_socket == -1)
-	{
-		send_simple_response(client->socket, 425, STATUS_425);
-		return -1;
-	}
-
-	send_simple_response(client->socket, 150, STATUS_150);
-	int err = send_list(client->data_socket, client->directory);
-	close(client->data_socket);
-	client->data_socket = -1;
-	if (err == 0)
-	{
-		send_simple_response(client->socket, 226, STATUS_226);
-	}
-	else
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-	}
-	return 0;
+    int result = 0;
+    int err = 0;
+    
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else if (client->data_socket == -1)
+    {
+        send_simple_response(client->socket, 425, STATUS_425);
+        result = -1;
+    }
+    else
+    {
+        send_simple_response(client->socket, 150, STATUS_150);
+        err = send_list(client->data_socket, client->directory);
+        
+        // Close the data socket regardless of success or failure
+        close(client->data_socket);
+        client->data_socket = -1;
+        
+        if (err == 0)
+        {
+            send_simple_response(client->socket, 226, STATUS_226);
+        }
+        else
+        {
+            send_simple_response(client->socket, 550, STATUS_550);
+            result = -1;  // Indicate failure in the return code
+        }
+    }
+    
+    return result;
 }
+
 
 static int cmd_nlst(lftpd_client_t *client, const char *arg)
 {
-	if (client->data_socket == -1)
-	{
-		send_simple_response(client->socket, 425, STATUS_425);
-		return -1;
-	}
-
-	send_simple_response(client->socket, 150, STATUS_150);
-	int err = send_nlst(client->data_socket, client->directory);
-	close(client->data_socket);
-	client->data_socket = -1;
-	if (err == 0)
-	{
-		send_simple_response(client->socket, 226, STATUS_226);
-	}
-	else
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-	}
-	return 0;
+    int result = 0;
+    int err = 0;
+    
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else if (client->data_socket == -1)
+    {
+        send_simple_response(client->socket, 425, STATUS_425);
+        result = -1;
+    }
+    else
+    {
+        send_simple_response(client->socket, 150, STATUS_150);
+        err = send_nlst(client->data_socket, client->directory);
+        
+        // Close the data socket regardless of success or failure
+        close(client->data_socket);
+        client->data_socket = -1;
+        
+        if (err == 0)
+        {
+            send_simple_response(client->socket, 226, STATUS_226);
+        }
+        else
+        {
+            send_simple_response(client->socket, 550, STATUS_550);
+            result = -1;  // Indicate failure in the return code
+        }
+    }
+    
+    return result;
 }
+
 
 static int cmd_noop(lftpd_client_t *client, const char *arg)
 {
@@ -414,71 +543,124 @@ static int cmd_noop(lftpd_client_t *client, const char *arg)
 	return 0;
 }
 
-static int cmd_pass(lftpd_client_t *client, const char *arg)
+static int cmd_pass(lftpd_client_t* client, const char* arg)
 {
-	send_simple_response(client->socket, 230, STATUS_230);
-	return 0;
+    int result = 0;
+    
+    if (client->username[0] == '\0')
+    {
+        // No username provided yet
+        send_simple_response(client->socket, 503, "Bad sequence of commands.");
+    }
+    else if (arg != NULL && strcmp(arg, valid_password) == 0)
+    {
+        client->authenticated = true;
+        send_simple_response(client->socket, 230, "User logged in successfully.");
+    }
+    else
+    {
+        send_simple_response(client->socket, 530, "Authentication failed.");
+    }
+    
+    return result;
 }
+
 
 static int cmd_pasv(lftpd_client_t *client, const char *arg)
 {
-	// open a data port
-	int listener_socket = lftpd_inet_listen(0);
-	if (listener_socket < 0)
-	{
-		send_simple_response(client->socket, 425, STATUS_425);
-		return -1;
-	}
+    int result = 0;
+    int listener_socket = -1;
+    int client_socket = -1;
+    int port = 0;
+    struct sockaddr_in client_addr;
+    socklen_t client_addr_len = sizeof(struct sockaddr_in);
+    int err = 0;
 
-	// get the port from the new socket, which is random
-	int port = lftpd_inet_get_socket_port(listener_socket);
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else
+    {
+        // open a data port
+        listener_socket = lftpd_inet_listen(0);
+        if (listener_socket < 0)
+        {
+            send_simple_response(client->socket, 425, STATUS_425);
+            result = -1;
+        }
+        else
+        {
+            // get the port from the new socket, which is random
+            port = lftpd_inet_get_socket_port(listener_socket);
 
-	// get our IP by reading our side of the client's control channel
-	// socket connection
-	struct sockaddr_in client_addr;
-	socklen_t client_addr_len = sizeof(struct sockaddr_in);
-	int err = getsockname(client->socket, (struct sockaddr *)&client_addr, &client_addr_len);
-	if (err != 0)
-	{
-		lftpd_log_error("error getting client IP info");
-		send_simple_response(client->socket, 425, STATUS_425);
-		close(listener_socket);
-		return -1;
-	}
+            // get our IP by reading our side of the client's control channel socket connection
+            err = getsockname(client->socket, (struct sockaddr *)&client_addr, &client_addr_len);
+            if (err != 0)
+            {
+                lftpd_log_error("error getting client IP info");
+                send_simple_response(client->socket, 425, STATUS_425);
+                result = -1;
+            }
+            else
+            {
+                // format the response
+                in_addr_t ip = htonl(client_addr.sin_addr.s_addr);
+                send_simple_response(client->socket, 227, STATUS_227,
+                                     (ip >> 24) & 0xff,
+                                     (ip >> 16) & 0xff,
+                                     (ip >> 8) & 0xff,
+                                     (ip >> 0) & 0xff,
+                                     (port >> 8) & 0xff, (port >> 0) & 0xff);
 
-	// format the response
-	in_addr_t ip = htonl(client_addr.sin_addr.s_addr);
-	send_simple_response(client->socket, 227, STATUS_227,
-						 (ip >> 24) & 0xff,
-						 (ip >> 16) & 0xff,
-						 (ip >> 8) & 0xff,
-						 (ip >> 0) & 0xff,
-						 (port >> 8) & 0xff, (port >> 0) & 0xff);
+                // wait for the connection to the data port
+                lftpd_log_debug("waiting for data port connection on port %d...", port);
+                client_socket = accept(listener_socket, NULL, NULL);
+                if (client_socket < 0)
+                {
+                    lftpd_log_error("error accepting client socket");
+                    result = -1;
+                }
+                else
+                {
+                    lftpd_log_debug("data port connection received...");
+                    client->data_socket = client_socket;
+                    client_socket = -1; // Prevent closing the socket that's now assigned to client
+                }
+            }
+        }
+    }
 
-	// wait for the connection to the data port
-	lftpd_log_debug("waiting for data port connection on port %d...", port);
-	int client_socket = accept(listener_socket, NULL, NULL);
-	if (client_socket < 0)
-	{
-		lftpd_log_error("error accepting client socket");
-		close(listener_socket);
-		return -1;
-	}
-	lftpd_log_debug("data port connection received...");
+    // Clean up resources
+    if (listener_socket >= 0)
+    {
+        close(listener_socket);
+    }
+    if (client_socket >= 0)
+    {
+        close(client_socket);
+    }
 
-	// close the listener
-	close(listener_socket);
-
-	client->data_socket = client_socket;
-
-	return 0;
+    return result;
 }
+
 
 static int cmd_pwd(lftpd_client_t *client, const char *arg)
 {
-	send_simple_response(client->socket, 257, "\"%s\"", client->directory);
-	return 0;
+    int result = 0;
+    
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else
+    {
+        send_simple_response(client->socket, 257, "\"%s\"", client->directory);
+    }
+    
+    return result;
 }
+
 
 static int cmd_quit(lftpd_client_t *client, const char *arg)
 {
@@ -488,78 +670,135 @@ static int cmd_quit(lftpd_client_t *client, const char *arg)
 
 static int cmd_retr(lftpd_client_t *client, const char *arg)
 {
-	if (client->data_socket == -1)
-	{
-		send_simple_response(client->socket, 425, STATUS_425);
-		return -1;
-	}
+    int result = 0;
+    char *path = NULL;
+    int err = 0;
 
-	send_simple_response(client->socket, 150, STATUS_150);
-	char *path = lftpd_io_canonicalize_path(client->directory, arg);
-	lftpd_log_debug("send '%s'", path);
-	int err = send_file(client->data_socket, path);
-	free(path);
-	close(client->data_socket);
-	client->data_socket = -1;
-	if (err == 0)
-	{
-		send_simple_response(client->socket, 226, STATUS_226);
-	}
-	else
-	{
-		send_simple_response(client->socket, 450, STATUS_450);
-	}
-	return 0;
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else if (client->data_socket == -1)
+    {
+        send_simple_response(client->socket, 425, STATUS_425);
+        result = -1;
+    }
+    else
+    {
+        send_simple_response(client->socket, 150, STATUS_150);
+        path = lftpd_io_canonicalize_path(client->directory, arg);
+        lftpd_log_debug("send '%s'", path);
+        err = send_file(client->data_socket, path);
+
+        // Close the data socket regardless of success or failure
+        close(client->data_socket);
+        client->data_socket = -1;
+
+        if (err == 0)
+        {
+            send_simple_response(client->socket, 226, STATUS_226);
+        }
+        else
+        {
+            send_simple_response(client->socket, 450, STATUS_450);
+            result = -1;  // Indicate failure in the return code
+        }
+    }
+
+    // Clean up allocated memory
+    if (path != NULL)
+    {
+        free(path);
+    }
+
+    return result;
 }
+
 
 static int cmd_size(lftpd_client_t *client, const char *arg)
 {
-	if (!arg)
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-		return 0;
-	}
+    int result = 0;
+    char *path = NULL;
+    struct stat st;
 
-	char *path = lftpd_io_canonicalize_path(client->directory, arg);
-	lftpd_log_debug("size %s", path);
-	struct stat st;
-	if (stat(path, &st) == 0)
-	{
-		send_simple_response(client->socket, 213, "%llu", st.st_size);
-	}
-	else
-	{
-		send_simple_response(client->socket, 550, STATUS_550);
-	}
-	free(path);
-	return 0;
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else if (!arg)
+    {
+        send_simple_response(client->socket, 550, STATUS_550);
+    }
+    else
+    {
+        path = lftpd_io_canonicalize_path(client->directory, arg);
+        lftpd_log_debug("size %s", path);
+        
+        if (stat(path, &st) == 0)
+        {
+            send_simple_response(client->socket, 213, "%llu", st.st_size);
+        }
+        else
+        {
+            send_simple_response(client->socket, 550, STATUS_550);
+        }
+    }
+
+    if (path)
+    {
+        free(path);
+    }
+
+    return result;
 }
+
 
 static int cmd_stor(lftpd_client_t *client, const char *arg)
 {
-	if (client->data_socket == -1)
-	{
-		send_simple_response(client->socket, 425, STATUS_425);
-		return -1;
-	}
-
-	send_simple_response(client->socket, 150, STATUS_150);
-	char *path = lftpd_io_canonicalize_path(client->directory, arg);
-	lftpd_log_debug("receive '%s'", path);
-	int err = receive_file(client->data_socket, path);
-	free(path);
-	close(client->data_socket);
-	client->data_socket = -1;
-	if (err == 0)
-	{
-		send_simple_response(client->socket, 226, STATUS_226);
-	}
-	else
-	{
-		send_simple_response(client->socket, 450, STATUS_450);
-	}
-	return 0;
+    int result = 0;
+    char *path = NULL;
+    int err = 0;
+    
+    if (!client->authenticated)
+    {
+        send_simple_response(client->socket, 530, "Not logged in.");
+    }
+    else if (client->data_socket == -1)
+    {
+        send_simple_response(client->socket, 425, STATUS_425);
+        result = -1;
+    }
+    else
+    {
+        send_simple_response(client->socket, 150, STATUS_150);
+        path = lftpd_io_canonicalize_path(client->directory, arg);
+        lftpd_log_debug("receive '%s'", path);
+        err = receive_file(client->data_socket, path);
+        
+        // Close the data socket regardless of success or failure
+        close(client->data_socket);
+        client->data_socket = -1;
+        
+        if (err == 0)
+        {
+            send_simple_response(client->socket, 226, STATUS_226);
+        }
+        else
+        {
+            send_simple_response(client->socket, 450, STATUS_450);
+            result = -1;  // Indicate failure in the return code
+        }
+    }
+    
+    // Clean up allocated memory
+    if (path != NULL)
+    {
+        free(path);
+    }
+    
+    return result;
 }
+
 
 static int cmd_syst(lftpd_client_t *client, const char *arg)
 {
@@ -575,17 +814,34 @@ static int cmd_type(lftpd_client_t *client, const char *arg)
 
 static int cmd_user(lftpd_client_t *client, const char *arg)
 {
-	send_simple_response(client->socket, 230, STATUS_230);
-	return 0;
+    int result = 0;
+    
+    if (arg == NULL || strlen(arg) == 0)
+    {
+        send_simple_response(client->socket, 530, "Invalid username.");
+    }
+    else if (strcmp(arg, valid_username) == 0)
+    {
+        strncpy(client->username, arg, sizeof(client->username));
+        client->authenticated = false;
+        send_simple_response(client->socket, 331, "Username verified, please enter password.");
+    }
+    else
+    {
+        send_simple_response(client->socket, 530, "User not recognized.");
+    }
+    
+    return result;
 }
+
 
 static int handle_control_channel(lftpd_client_t *client)
 {
 	int err = send_simple_response(client->socket, 220, STATUS_220);
-	
-	char* read_buffer = NULL;
+
+	char *read_buffer = NULL;
 	size_t read_buffer_len = 512;
-	
+
 	if (err != 0)
 	{
 		lftpd_log_error("error sending welcome message");
@@ -680,6 +936,9 @@ int lftpd_start(const char *directory, int port, lftpd_t *lftpd)
 {
 	memset(lftpd, 0, sizeof(lftpd_t));
 
+	// Load credentials from NVS
+    load_credentials_from_nvs();
+
 	lftpd->directory = directory;
 	lftpd->port = port;
 	lftpd->server_socket = lftpd_inet_listen(port);
@@ -735,6 +994,8 @@ int lftpd_start(const char *directory, int port, lftpd_t *lftpd)
 			.directory = strdup(directory),
 			.socket = client_socket,
 			.data_socket = -1,
+			.authenticated = false,
+			.username = {0},
 		};
 		lftpd->client = &client;
 		handle_control_channel(&client);

@@ -8,9 +8,11 @@
 #define DEFAULT_PORT        21u
 static lftpd_t  ftpd_obj;
 
-static TaskFunction_t lftpd_thread(void)
+static void lftpd_thread(void *pvParameters)
 {
+    (void) pvParameters;
     lftpd_start(DEFAULT_PATH, DEFAULT_PORT, &ftpd_obj);
+    vTaskDelete(NULL);
 }
 
 void init_ftpd()
